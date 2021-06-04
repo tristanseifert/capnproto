@@ -804,6 +804,214 @@ bool Once::isInitialized() noexcept {
 void Once::reset() {
   InitOnceInitialize(&coercedInitOnce);
 }
+#elif defined(__Kush__)
+// =======================================================================================
+// Kush C11 lock based implementation
+#define KJ_C11THREAD_CALL(code) \
+  { \
+    int c11Error = code; \
+    if (c11Error != thrd_success) { \
+      KJ_FAIL_SYSCALL(#code, c11Error); \
+    } \
+  }
+
+#define KJ_C11THREAD_CLEANUP(code) \
+  { \
+    int c11Error = code; \
+    if (c11Error != 0) { \
+      KJ_LOG(ERROR, #code, strerror(c11Error)); \
+    } \
+  }
+
+Mutex::Mutex() {
+    KJ_C11THREAD_CALL(mtx_init(&mutex, mtx_plain | mtx_recursive));
+}
+Mutex::~Mutex() {
+    mtx_destroy(&mutex);
+}
+
+bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, NoopSourceLocation) {
+  if (timeout != nullptr) {
+    KJ_UNIMPLEMENTED("Locking a mutex with a timeout is not yet supported.");
+  }
+  switch (exclusivity) {
+    case EXCLUSIVE:
+      KJ_C11THREAD_CALL(mtx_lock(&mutex));
+      break;
+    case SHARED:
+      KJ_UNIMPLEMENTED("shared locking not yet implemented for kush");
+      break;
+  }
+  return true;
+}
+
+void Mutex::unlock(Exclusivity exclusivity, Waiter* waiterToSkip) {
+  KJ_DEFER(KJ_C11THREAD_CALL(mtx_unlock(&mutex)));
+
+  if (exclusivity == EXCLUSIVE) {
+    // Check if there are any conditional waiters. Note we only do this when unlocking an
+    // exclusive lock since under a shared lock the state couldn't have changed.
+    auto nextWaiter = waitersHead;
+    for (;;) {
+      KJ_IF_MAYBE(waiter, nextWaiter) {
+        nextWaiter = waiter->next;
+
+        if (waiter != waiterToSkip && checkPredicate(*waiter)) {
+          // This waiter's predicate now evaluates true, so wake it up. It doesn't matter if we
+          // use _signal() vs. _broadcast() here since there's always only one thread waiting.
+          KJ_C11THREAD_CALL(mtx_lock(&waiter->mutex));
+          KJ_C11THREAD_CALL(cnd_signal(&waiter->condvar));
+          KJ_C11THREAD_CALL(mtx_unlock(&waiter->mutex));
+
+          // We only need to wake one waiter. Note that unlike the futex-based implementation, we
+          // cannot "transfer ownership" of the lock to the waiter, therefore we cannot guarantee
+          // that the condition is still true when that waiter finally awakes. However, if the
+          // condition is no longer true at that point, the waiter will re-check all other waiters'
+          // conditions and possibly wake up any other waiter who is now ready, hence we still only
+          // need to wake one waiter here.
+          break;
+        }
+      } else {
+        // No more waiters.
+        break;
+      }
+    }
+  }
+}
+
+void Mutex::assertLockedByCaller(Exclusivity exclusivity) {
+  switch (exclusivity) {
+    case EXCLUSIVE:
+      // A read lock should fail if the mutex is already held for writing.
+      if (mtx_trylock(&mutex) == thrd_success) {
+        mtx_unlock(&mutex);
+        KJ_FAIL_ASSERT("Tried to call getAlreadyLocked*() but lock is not held.");
+      }
+      break;
+    case SHARED:
+      KJ_UNIMPLEMENTED("assertLockedByCaller() not yet implemented for kush");
+      break;
+  }
+}
+
+void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocation) {
+  // Add waiter to list.
+  Waiter waiter {
+    nullptr, waitersTail, predicate, nullptr,
+    // we need to manually initialize mutex and condvar next
+    {}, {}
+  };
+  KJ_C11THREAD_CALL(mtx_init(&waiter.mutex, mtx_plain));
+  KJ_C11THREAD_CALL(cnd_init(&waiter.condvar));
+  addWaiter(waiter);
+
+  // To guarantee that we've re-locked the mutex before scope exit, keep track of whether it is
+  // currently.
+  bool currentlyLocked = true;
+  KJ_DEFER({
+    if (!currentlyLocked) lock(EXCLUSIVE, nullptr, NoopSourceLocation{});
+    removeWaiter(waiter);
+
+    // Destroy pthread objects.
+    mtx_destroy(&waiter.mutex);
+    cnd_destroy(&waiter.condvar);
+  });
+
+  Maybe<struct timespec> endTime = timeout.map([](Duration d) {
+    return toAbsoluteTimespec(now() + d);
+  });
+
+  while (!predicate.check()) {
+    KJ_C11THREAD_CALL(mtx_lock(&waiter.mutex));
+
+    // OK, now we can unlock the main mutex.
+    unlock(EXCLUSIVE, &waiter);
+    currentlyLocked = false;
+
+    bool timedOut = false;
+
+    // Wait for someone to signal the condvar.
+    KJ_IF_MAYBE(t, endTime) {
+      int error = cnd_timedwait(&waiter.condvar, &waiter.mutex, t);
+      if (error != 0) {
+        if (error == ETIMEDOUT) {
+          timedOut = true;
+        } else {
+          KJ_FAIL_SYSCALL("c11_cond_timedwait", error);
+        }
+      }
+    } else {
+      KJ_C11THREAD_CALL(cnd_wait(&waiter.condvar, &waiter.mutex));
+    }
+
+    // We have to be very careful about lock ordering here. We need to unlock stupidMutex before
+    // re-locking the main mutex, because another thread may have a lock on the main mutex already
+    // and be waiting for a lock on stupidMutex. Note that other thread may signal the condvar
+    // right after we unlock stupidMutex but before we re-lock the main mutex. That is fine,
+    // because we've already been signaled.
+    KJ_C11THREAD_CALL(mtx_unlock(&waiter.mutex));
+
+    lock(EXCLUSIVE, nullptr, NoopSourceLocation{});
+    currentlyLocked = true;
+
+    KJ_IF_MAYBE(exception, waiter.exception) {
+      // The predicate threw an exception, apparently. Propagate it.
+      // TODO(someday): Could we somehow have this be a recoverable exception? Presumably we'd
+      //   then want MutexGuarded::when() to skip calling the callback, but then what should it
+      //   return, since it normally returns the callback's result? Or maybe people who disable
+      //   exceptions just really should not write predicates that can throw.
+      kj::throwFatalException(kj::mv(**exception));
+    }
+
+    if (timedOut) {
+      return;
+    }
+  }
+}
+
+void Mutex::induceSpuriousWakeupForTest() {
+  auto nextWaiter = waitersHead;
+  for (;;) {
+    KJ_IF_MAYBE(waiter, nextWaiter) {
+      nextWaiter = waiter->next;
+      KJ_C11THREAD_CALL(mtx_lock(&waiter->mutex));
+      KJ_C11THREAD_CALL(cnd_signal(&waiter->condvar));
+      KJ_C11THREAD_CALL(mtx_unlock(&waiter->mutex));
+    } else {
+      // No more waiters.
+      break;
+    }
+  }
+}
+
+Once::Once(bool startInitialized)
+    : state(startInitialized ? INITIALIZED : UNINITIALIZED) {
+        KJ_C11THREAD_CALL(mtx_init(&mutex, mtx_plain));
+    }
+Once::~Once() {
+  mtx_destroy(&mutex);
+}
+
+void Once::runOnce(Initializer& init, NoopSourceLocation) {
+  KJ_C11THREAD_CALL(mtx_lock(&mutex));
+  KJ_DEFER(KJ_C11THREAD_CALL(mtx_unlock(&mutex)));
+
+  if (state != UNINITIALIZED) {
+    return;
+  }
+
+  init.run();
+
+  __atomic_store_n(&state, INITIALIZED, __ATOMIC_RELEASE);
+}
+
+void Once::reset() {
+  State oldState = INITIALIZED;
+  if (!__atomic_compare_exchange_n(&state, &oldState, UNINITIALIZED,
+                                   false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+    KJ_FAIL_REQUIRE("reset() called while not initialized.");
+  }
+}
 
 #else
 // =======================================================================================

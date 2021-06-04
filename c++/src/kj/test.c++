@@ -28,7 +28,11 @@
 #include "io.h"
 #include "miniposix.h"
 #include <stdlib.h>
+
+#ifndef __Kush__
 #include <signal.h>
+#endif
+
 #include <string.h>
 #include "time.h"
 #ifndef _WIN32

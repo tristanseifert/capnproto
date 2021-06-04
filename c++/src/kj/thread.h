@@ -25,6 +25,11 @@
 #include "function.h"
 #include "exception.h"
 
+#ifdef __Kush__
+// forward declare the thread struct type
+struct uthread;
+#endif
+
 KJ_BEGIN_HEADER
 
 namespace kj {
@@ -40,7 +45,7 @@ public:
 
   ~Thread() noexcept(false);
 
-#if !_WIN32
+#if !_WIN32 && !defined(__Kush__)
   void sendSignal(int signo);
   // Send a Unix signal to the given thread, using pthread_kill or an equivalent.
 #endif
@@ -65,6 +70,9 @@ private:
 
 #if _WIN32
   void* threadHandle;
+#elif defined(__Kush__)
+  // thrd_t is "struct uthread *"
+  uthread *thread;
 #else
   unsigned long long threadId;  // actually pthread_t
 #endif
@@ -72,6 +80,8 @@ private:
 
 #if _WIN32
   static unsigned long __stdcall runThread(void* ptr);
+#elif defined(__Kush__)
+  static int runThread(void* ptr);
 #else
   static void* runThread(void* ptr);
 #endif

@@ -48,9 +48,11 @@ uint HashCoder::operator*(ArrayPtr<const byte> s) const {
   case 3:
     h ^= data[2] << 16;
     // fallthrough
+    [[fallthrough]];
   case 2:
     h ^= data[1] << 8;
     // fallthrough
+    [[fallthrough]];
   case 1:
     h ^= data[0];
     h *= m;
@@ -63,3 +65,4 @@ uint HashCoder::operator*(ArrayPtr<const byte> s) const {
 
 }  // namespace _ (private)
 } // namespace kj
+

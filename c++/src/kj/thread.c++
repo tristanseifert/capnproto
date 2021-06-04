@@ -25,6 +25,8 @@
 #if _WIN32
 #include <windows.h>
 #include "windows-sanity.h"
+#elif defined(__Kush__)
+#include <threads.h>
 #else
 #include <pthread.h>
 #include <signal.h>
@@ -61,8 +63,35 @@ void Thread::detach() {
   detached = true;
 }
 
-#else  // _WIN32
+#elif defined(__Kush__)  // _WIN32
+Thread::Thread(Function<void()> func): state(new ThreadState(kj::mv(func))) {
+  int c11threadResult = thrd_create(&thread, &runThread, state);
+  if (c11threadResult != thrd_success) {
+    state->unref();
+    KJ_FAIL_SYSCALL("thrd_create", c11threadResult);
+  }
+}
 
+Thread::~Thread() noexcept(false) {
+    if(!detached) {
+        KJ_DEFER(state->unref());
+
+        int c11threadResult = thrd_join(thread, nullptr);
+        if(c11threadResult != thrd_success) {
+          KJ_FAIL_SYSCALL("thrd_join", c11threadResult) { break; }
+        }
+    }
+}
+
+void Thread::detach() {
+  int c11threadResult = thrd_detach(thread);
+  if (c11threadResult != 0) {
+    KJ_FAIL_SYSCALL("thrd_detach", c11threadResult) { break; }
+  }
+  detached = true;
+  state->unref();
+}
+#else // __Kush__
 Thread::Thread(Function<void()> func): state(new ThreadState(kj::mv(func))) {
   static_assert(sizeof(threadId) >= sizeof(pthread_t),
                 "pthread_t is larger than a long long on your platform.  Please port.");
@@ -141,6 +170,8 @@ void Thread::ThreadState::unref() {
 
 #if _WIN32
 DWORD Thread::runThread(void* ptr) {
+#elif defined(__Kush__)
+int Thread::runThread(void *ptr) {
 #else
 void* Thread::runThread(void* ptr) {
 #endif

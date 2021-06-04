@@ -44,7 +44,9 @@
 #include <stdlib.h>
 #include <exception>
 #include <new>
+#ifndef __Kush__
 #include <signal.h>
+#endif
 #include <stdint.h>
 #ifndef _WIN32
 #include <sys/mman.h>
@@ -566,6 +568,7 @@ void printStackTraceOnCrash() {
 #else
 namespace {
 
+#ifndef __Kush__
 void crashHandler(int signo, siginfo_t* info, void* context) {
   void* traceSpace[32];
 
@@ -593,10 +596,12 @@ void crashHandler(int signo, siginfo_t* info, void* context) {
   FdOutputStream(STDERR_FILENO).write(message.begin(), message.size());
   _exit(1);
 }
+#endif
 
 }  // namespace
 
 void printStackTraceOnCrash() {
+#ifndef __Kush__
   // Set up alternate signal stack so that stack overflows can be handled.
   stack_t stack;
   memset(&stack, 0, sizeof(stack));
@@ -636,6 +641,7 @@ void printStackTraceOnCrash() {
   // Dump stack on keyboard interrupt -- useful for infinite loops. Only in debug mode, though,
   // because stack traces on ctrl+c can be obnoxious for, say, command-line tools.
   KJ_SYSCALL(sigaction(SIGINT, &action, nullptr));
+#endif
 #endif
 
 #if !KJ_NO_EXCEPTIONS

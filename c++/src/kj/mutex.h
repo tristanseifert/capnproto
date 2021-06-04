@@ -34,7 +34,11 @@ KJ_BEGIN_HEADER
 #define KJ_USE_FUTEX 1
 #endif
 
-#if !KJ_USE_FUTEX && !_WIN32 && !__CYGWIN__
+#ifdef __Kush__
+#include <threads.h>
+#endif
+
+#if !KJ_USE_FUTEX && !_WIN32 && !__CYGWIN__ && !defined(__Kush__)
 // We fall back to pthreads when we don't have a better platform-specific primitive. pthreads
 // mutexes are bloated, though, so we like to avoid them. Hence on Linux we use futex(), and on
 // Windows we use SRW locks and friends. On Cygwin we prefer the Win32 primitives both because they
@@ -185,7 +189,8 @@ private:
 
 #elif _WIN32 || __CYGWIN__
   uintptr_t srwLock;  // Actually an SRWLOCK, but don't want to #include <windows.h> in header.
-
+#elif defined(__Kush__)
+  mtx_t mutex;
 #else
   mutable pthread_rwlock_t mutex;
 #endif
@@ -225,6 +230,9 @@ private:
 #elif _WIN32 || __CYGWIN__
     uintptr_t condvar;
     // Actually CONDITION_VARIABLE, but don't want to #include <windows.h> in header.
+#elif defined(__Kush__)
+    cnd_t condvar;
+    mtx_t mutex;
 #else
     pthread_cond_t condvar;
 
@@ -305,7 +313,11 @@ private:
     INITIALIZED
   };
   State state;
+#ifdef __Kush__
+  mtx_t mutex;
+#else
   pthread_mutex_t mutex;
+#endif
 #endif
 };
 

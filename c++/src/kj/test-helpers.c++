@@ -23,7 +23,10 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
+
+#if !defined(__Kush__)
 #include <sys/wait.h>
+#endif
 #else
 #include <process.h>
 #endif
@@ -103,6 +106,9 @@ bool expectFatalThrow(kj::Maybe<Exception::Type> type, kj::Maybe<StringPtr> mess
                       Function<void()> code) {
 #if _WIN32
   // We don't support death tests on Windows due to lack of efficient fork.
+  return true;
+#elif defined(__Kush__)
+  // As with Win32, we don't support death test as there's no fork implementation.
   return true;
 #else
   pid_t child;
