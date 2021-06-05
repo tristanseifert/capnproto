@@ -63,6 +63,8 @@ set(capnp_schemas
   stream.capnp
 )
 add_library(capnp ${capnp_sources})
+target_compile_options(capnp PRIVATE -fPIC -fno-exceptions -fno-rtti)
+
 add_library(CapnProto::capnp ALIAS capnp)
 target_link_libraries(capnp PUBLIC kj)
 #make sure external consumers don't need to manually set the include dirs

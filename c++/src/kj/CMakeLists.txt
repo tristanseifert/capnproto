@@ -74,6 +74,8 @@ set(kj-std_headers
   std/iostream.h
 )
 add_library(kj ${kj_sources})
+target_compile_options(kj PRIVATE -fPIC -fno-exceptions -fno-rtti)
+
 add_library(CapnProto::kj ALIAS kj)
 # TODO(cleanup): Use cxx_std_14 once it's safe to require cmake 3.8.
 target_compile_features(kj PUBLIC cxx_generic_lambdas)
@@ -105,6 +107,8 @@ set(kj-test-compat_headers
   compat/gtest.h
 )
 add_library(kj-test ${kj-test_sources})
+target_compile_options(kj-test PRIVATE -fPIC -fno-exceptions -fno-rtti)
+
 add_library(CapnProto::kj-test ALIAS kj-test)
 target_link_libraries(kj-test PUBLIC kj)
 # Ensure the library has a version set to match autotools build
